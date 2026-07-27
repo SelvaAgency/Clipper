@@ -27,7 +27,9 @@ WORKDIR /app
 
 # ── Pacotes Python (inclui yt-dlp + curl_cffi para impersonação no Kick/Cloudflare) ──
 COPY requirements.txt .
-RUN pip3 install --break-system-packages --no-cache-dir -r requirements.txt
+COPY patches/ ./patches/
+RUN pip3 install --break-system-packages --no-cache-dir -r requirements.txt \
+ && find /usr -name "kick.py" -path "*/yt_dlp/extractor/*" -exec cp /app/patches/kick.py {} \;
 
 # ── Dependências Node (somente produção) ──────────────────────────────────────
 COPY package*.json ./
