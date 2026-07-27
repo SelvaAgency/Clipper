@@ -263,22 +263,55 @@ async function downloadHlsDirect(
  * Suporta YouTube, Twitch, Kick e qualquer plataforma suportada pelo yt-dlp.
  */
 export async function getVideoInfo(url: string): Promise<VideoInfo> {
+  const ytdlpArgs = ["--dump-json", "--no-download", "--no-playlist", "--playlist-items", "1", url];
+  const cmdStr    = `yt-dlp ${ytdlpArgs.join(" ")}`;
+
+  console.log(`[getVideoInfo] URL recebida: ${url}`);
+  console.log(`[getVideoInfo] Comando: ${cmdStr}`);
+
   let result: { stdout: string; stderr: string };
   try {
-    result = await run(
-      "yt-dlp",
-      ["--dump-json", "--no-download", "--no-playlist", "--playlist-items", "1", url],
-      60_000
-    );
+    result = await run("yt-dlp", ytdlpArgs, 60_000);
   } catch (err: any) {
-    if (err.message.includes("não foi encontrado")) throw ytdlpMissingError();
-    throw new Error(`Falha ao obter informações do vídeo: ${err.message}`);
+    const msg: string = err.message ?? String(err);
+
+    // Log completo para diagnóstico no servidor
+    console.error(`[getVideoInfo] ERRO — exit code não-zero`);
+    console.error(`[getVideoInfo] Mensagem: ${msg.slice(0, 2000)}`);
+
+    if (msg.includes("não foi encontrado")) throw ytdlpMissingError();
+
+    // Mensagem legível ao usuário com base no código HTTP retornado pelo yt-dlp
+    if (msg.includes("HTTP Error 404")) {
+      throw new Error(
+        "Vídeo não encontrado (404). Verifique se a URL está correta e se o vídeo ainda existe na plataforma.\n" +
+        `URL: ${url}`
+      );
+    }
+    if (msg.includes("HTTP Error 403") || msg.includes("impersonation")) {
+      throw new Error(
+        "Acesso bloqueado (403 / Cloudflare). A dependência curl_cffi pode não estar instalada no servidor.\n" +
+        "Execute: pip3 install curl_cffi"
+      );
+    }
+    if (msg.includes("HTTP Error 410")) {
+      throw new Error(`Vídeo removido permanentemente (410). URL: ${url}`);
+    }
+
+    throw new Error(`Falha ao obter informações do vídeo:\n${msg}`);
   }
 
+  console.log(`[getVideoInfo] stdout (${result.stdout.length} bytes), stderr (${result.stderr.length} bytes)`);
+
   const jsonLine = result.stdout.split("\n").find(l => l.trimStart().startsWith("{"));
-  if (!jsonLine) throw new Error("Resposta inesperada do yt-dlp ao buscar metadados.");
+  if (!jsonLine) {
+    console.error(`[getVideoInfo] Resposta inesperada — stdout: ${result.stdout.slice(0, 500)}`);
+    throw new Error("Resposta inesperada do yt-dlp ao buscar metadados.");
+  }
 
   const info = JSON.parse(jsonLine);
+  console.log(`[getVideoInfo] OK — extractor=${info.extractor_key ?? info.extractor}, duration=${info.duration}s`);
+
   return {
     title:        info.title ?? url,
     durationSec:  Math.round(info.duration ?? 0),
@@ -370,6 +403,8 @@ export async function downloadVideo(
 
     args.push(url);
 
+    console.log(`[downloadVideo] Comando: yt-dlp ${args.join(" ")}`);
+
     let lastProgressTime = 0;
     let lastSize = "";
 
@@ -412,11 +447,21 @@ export async function downloadVideo(
       return;
     }
   } catch (err: any) {
-    if (err.message.includes("cancelado")) throw err;
-    if (err.message.includes("não foi encontrado")) throw ytdlpMissingError();
-    if (isPartial) throw err; // sem fallback HTTP para parciais
+    const msg: string = err.message ?? String(err);
+    console.error(`[downloadVideo] ERRO yt-dlp: ${msg.slice(0, 1000)}`);
 
-    log(`yt-dlp falhou (${err.message.split("\n")[0]}), tentando download HTTP direto...`);
+    if (msg.includes("cancelado")) throw err;
+    if (msg.includes("não foi encontrado")) throw ytdlpMissingError();
+
+    if (msg.includes("HTTP Error 404")) {
+      throw new Error(`Vídeo não encontrado (404). Verifique se a URL está correta e o vídeo existe.\nURL: ${url}`);
+    }
+    if (msg.includes("HTTP Error 403") || msg.includes("impersonation")) {
+      throw new Error("Acesso bloqueado (403 / Cloudflare). Verifique se curl_cffi está instalado no servidor.");
+    }
+
+    if (isPartial) throw err; // sem fallback HTTP para parciais
+    log(`yt-dlp falhou (${msg.split("\n")[0]}), tentando download HTTP direto...`);
   }
 
   // ── Caminho 3: HTTP direto (apenas download completo de links .mp4) ─────────

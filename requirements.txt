@@ -1,4 +1,4 @@
 numpy
 scipy
-yt-dlp
-curl_cffi
+yt-dlp>=2026.7.4
+curl_cffi>=0.7.0
